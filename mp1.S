@@ -28,8 +28,8 @@
 .globl mp1_missile_list, base_alive, mp1_score
 
 mp1_missile_list:	.long 0x0	# Head of list pointer
-base_alive:		.long 0x0	# Array of 3 bytes, plus a padding byte
-mp1_score:		.long 0x0	# Player's current score
+base_alive:			.long 0x0	# Array of 3 bytes, plus a padding byte
+mp1_score:			.long 0x0	# Player's current score
 
 
 # Data private to this  file
@@ -83,7 +83,7 @@ mp1_rtc_tasklet:
 		pushl %ebx
 		pushl %esi
 		pushl %edi
-		#Callee saves?
+		#Caller saves?
 		call update_missiles
 		call redraw_cities
 		call redraw_xhairs	
@@ -146,13 +146,34 @@ update_missiles:
 		movl mp1_missile_list, %ebx
 
 traverse_list:
-		cmpl $0, (%ebx) #Access M[ebx] and check if it's null
+		cmpl $0, (%ebx) #Access M[ebx] and check if it's null | do we NULL check pointer or struct?
 		je end_missiles
+		#Clear missile 
+		pushl %eax
+		pushl %ecx
+		pushl %edx
+		pushl %ebx #push function parameter, pointer to missile
+		call calculate_missile_offset 
+		addl $4, %esp
+		movb $32, $cl #move (space) into cl 
+		call mp1_poke #offset in eax and char in cl
+		popl %edx
+		popl %ecx
+		popl %eax
 		movl EXPLODED(%ebx), %esi 
 		cmpl $0, %esi  #Check if missile is exploding
 		jg missile_exploding
 		#update x and y
-
+		pushl %eax
+		pushl %ecx
+		pushl %edx
+		pushl %ebx #push function parameter, pointer to missile
+		call update_missile_position
+		addl $4, %esp #remove parameter from stack
+		popl %edx
+		popl %ecx
+		popl %eax
+		#Check if the missile went off screen
 		cmpl $0, X(%ebx)
 		jl remove_missile
 		cmpl $79, X(%ebx)
@@ -167,17 +188,38 @@ traverse_list:
 		movl DEST_Y(%ebx), %edi
 		cmpl Y(%ebx), %edi
 		jne not_reached
+		movl $0, VX(%ebx)	#make this missile stop moving
+		movl $0, VY(%ebx)
 		jmp missile_exploding #it has reached its destination,so explode
 not_reached:
-		#update the screen
-		movl NEXT(%ebx), %ebx #move the next missile to be processed into ebx and continue
-		jmp traverse_list 
+		#put missile symbol in cl
+		movb C(%ebx), %cl
+		jmp redraw_missiles 
 missile_exploding:
 		#call missile_explode
-		#update other missiles and cities
-		#decrement explode value
-		#if 0, remove missile
-		#if not, jmp back to next missile processing
+		#Caller saves
+		pushl %eax 
+		pushl %ecx
+		pushl %edx 
+		pushl %ebx #contains pointer to missile that's exploding, function parameter
+		call missile_explode
+		addl $4, %esp #remove the argument 
+		movl %eax, %edi #put the missile_explode return val into edi
+		popl %edx
+		popl %ecx
+		popl %eax
+		cmpl $0, %edi
+		jne chain_explosion	 #update other missiles and cities
+decrement_exploded:
+		decl EXPLODED(%ebx) #decrement explode value
+		cmpl $0, EXPLODED(%ebx) #if 0, remove missile if not, jmp back to next missile processing
+		je remove_missile
+		#put exploding character into cl
+		movb $64, %cl  #PUTTING 64 '@' but figure out how to put explosion here
+		jmp redraw_missiles
+chain_explosion:
+		#Update the cities and other missiles here
+		jmp decrement_exploded
 remove_missile:
 		movl NEXT(%ebx), %ecx 	#move the pointer to the next missile to ecx
 		pushl %eax
@@ -190,6 +232,19 @@ remove_missile:
 		popl %ecx
 		popl %eax
 		movl %ecx, %ebx     #put the next missile to be checked back into ebx
+		jmp traverse_list
+redraw_missiles:
+		#put the offset in memory into eax, char already in cl
+		#Caller save ecx and edx
+		pushl %ecx
+		pushl %edx
+		pushl %ebx	#push function parameter, missile pointer
+		call calculate_missile_offset #offset in eax now
+		addl $4, %esp #remove function parameter from stack
+		pushl %edx #mp1_poke clobbers edx so save it
+		call mp1_poke
+		popl %edx
+		movl NEXT(%ebx), %ebx #curr= curr->next
 		jmp traverse_list
 end_missiles:
 		popl %edi
@@ -319,7 +374,7 @@ redraw_xhairs:
 		imull crosshairs_y, %ebx, %esi #column offset in esi
 		addl %edi, %esi 
 		movl %esi, %eax #move video offset into eax for mp1_poke 
-		movl XHAIR, %cl #move crosshair character into cl
+		movb XHAIR, %cl #move crosshair character into cl
 		#Do we need caller convention here?
 		call mp1_poke
 		popl %edx
@@ -355,11 +410,19 @@ remove_head_list:
 		movl %ebx, mp1_missile_list #Does this work? Store the new head as the NEXT missile
 remove_from_screen:
 		#erase the missile by putting " " char at it's location
-		#Not sure if we need to do this?
+		pushl %edi #push the parameter, the missile pointer
+		call calculate_missile_offset
+		addl $4, %esp
+		movb $32, %cl #move (space) into cl
+		pushl %edx #mp1_poke clobbers edx
+		call mp1_poke
+		popl %edx
+
 free_missile: #Calling convention needed?
-		pushl %esi #push function parameter, a pointer to the memory to be freed
+		#SHOULD THIS BE ESI?
+		pushl %edi #push function parameter, a pointer to the memory to be freed
 		call mp1_free
-		popl %esi
+		popl %edi
 
 missile_remove_return:		
 		popl %edi
@@ -435,6 +498,19 @@ mp1_ioctl_movexhairs:
 		pushl %edi
 		xorl %edx, %edx
 		xorl %esi, %esi
+		#First clear the current crosshair
+		movb $32, %cl #move (space) ASCII into cl for printing to screen
+		pushl %edx #mp1_poke clobbers edx
+		movl row_offset, %ebx
+		imull crosshairs_x, %ebx, %edi #row offset in edi
+		movl column_offset, %ebx
+		imull crosshairs_y, %ebx, %esi #column offset in esi
+		addl %edi, %esi 
+		movl %esi, %eax #move video offset into eax for mp1_poke 
+		#Do we need caller convention here?
+		call mp1_poke
+		popl %edx
+		#Now update the new crosshair position
 		movl 8(%ebp), %ebx #move function parameter (x,y change) into ebx
 		movl %bx, %edx #move high 16 bits into edx, holds y change. DOES THIS WORK?? Does it sign extend??
 		shll $16, %ebx #shift the bottom 16 bits into the high 16 bits in ebx
@@ -479,7 +555,7 @@ mp1_ioctl_getstatus:
 		pushl %ebx
 		pushl %esi
 		pushl %edi
-		movl -8(%ebp), %ebx #Move user-level integer pointer to ebx
+		movl 8(%ebp), %ebx #Move user-level integer pointer to ebx
 		#Copy digits into a number
 		xorl %edx, %edx
 		movw mp1_score, %dx #Move score into lower 16 bits
@@ -536,7 +612,7 @@ mp1_ioctl_endgame:
 
 free_missile_list:
 		movl mp1_missile_list, %ebx
-		cmpl $0, %ebx
+		cmpl $0, %ebx #compare pointer or struct missile?
 		je endgame_return
 		movl NEXT(%ebx), %edi
 		movl %edi, mp1_missile_list #Does this work? Store the new head as the NEXT missile
@@ -550,5 +626,46 @@ endgame_return:
 		popl %esi
 		popl %ebx
 		xorl %eax, %eax #return 0
+		leave
+		ret
+
+update_missile_position:
+		pushl %ebp
+		movl %esp, %ebp
+		pushl %ebx
+		pushl %esi
+		pushl %edi
+		movl 8(%ebp), %ebx #move the missile pointer into ebx
+		#Update both the x and y coordinate, VX/VY shouldn't change afaik
+		movl X(%ebx), %esi
+		addl VX(%ebx), %esi
+		movl %esi, X(%ebx)
+		movl Y(%ebx), %esi
+		addl VY(%ebx), %esi
+		movl %esi, Y(%ebx)
+		popl %edi
+		popl %esi
+		popl %ebx
+		leave
+		ret
+
+calculate_missile_offset:
+		pushl %ebp
+		movl %esp, %ebp
+		pushl %ebx
+		pushl %esi
+		pushl %edi
+		movl 8(%ebp), %ebx #move the missile pointer into ebx
+		movl X(%ebp), %esi
+		shll $16, %esi #shift the high 16 bits to the bottom 16 bits
+		movl Y(%ebp), %edi 
+		shll $16, %edi 
+		imull row_offset, %esi, %esi
+		imull column_offset, %edi, %edi #can we overwrite, does this work?
+		addl %edi, %esi
+		movl %esi, %eax
+		popl %edi
+		popl %esi
+		popl %ebx
 		leave
 		ret
