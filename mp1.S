@@ -40,7 +40,7 @@ crosshairs_x:		.long 0x0	# X-position of the crosshairs
 crosshairs_y:		.long 0x0	# Y-position of the crosshairs
 XHAIR: 				.long 88	#Character for crosshair - 'X'
 row_offset:         .long 160   #Row multiple for writing to screen (80 bytes per row * 2 bytes per character)
-column_offset:      .long 2     #Column multiple for writing to screen (2 bytes per character)
+column_offset:      .long 2     #Column multiple for writing to screen (2 bytes per character) MIGHT NEED TO FLIP THESE TWO
 mp1_status:			.long 0x0   #Status variable with information of the score and base alive/dead
 
 jump_table:
@@ -152,14 +152,14 @@ traverse_list:
 
 
 
-
-
 end_missiles:
 		popl %edi
 		popl %esi
 		popl %ebx
 		leave
 		ret
+
+
 
 redraw_cities: #FIX BITMASKS (Nonzero for alive and zero for dead)
 		pushl %ebp
@@ -291,7 +291,42 @@ redraw_xhairs:
 		ret
 
 
-mp1_missile_remove: 
+mp1_missile_remove:
+		pushl %ebp
+		movl %esp, %ebp
+		pushl %ebx
+		pushl %esi
+		pushl %edi
+		movl 8(%ebp), %esi #Move the pointer to the missile to be removed into esi DO WE WANT POINTER TO MISSILE OR ACTUAL MISSILE?
+
+		movl mp1_missile_list, %edi #Move the head missile into edi
+		cmpl %edi, %esi 
+		je remove_head_list
+find_missile:
+		movl %edi, %ebx #store prev in ebx
+		movl NEXT(%edi), %edi #move to next missile
+		cmpl %edi, %esi  #is this the missile to be removed?
+		je found_missile
+		jmp find_missile
+found_missile:
+		movl NEXT(%edi), NEXT(%ebx) #point the prev->next to curr->next
+		jmp remove_from_screen
+remove_head_list:
+		movl NEXT(%edi), %ebx
+		movl %ebx, mp1_missile_list #Does this work? Store the new head as the NEXT missile
+remove_from_screen:
+		#erase the missile by putting " " char at it's location
+		#Not sure if we need to do this?
+free_missile: #Calling convention needed?
+		pushl %esi #push function parameter, a pointer to the memory to be freed
+		call mp1_free
+		popl %esi
+
+missile_remove_return:		
+		popl %edi
+		popl %esi
+		popl %ebx
+		leave 
 		ret
 
 mp1_ioctl_startgame: #FIX setting base_alive
@@ -306,7 +341,6 @@ mp1_ioctl_startgame: #FIX setting base_alive
 		movl $40, crosshairs_x(,1)
 		movl $12, crosshairs_y(,1)
 		#Do we have to draw crosshairs? Should tasklet/redraw_xhairs figure that out?
-
 		popl %edi
 		popl %esi
 		popl %ebx
@@ -314,7 +348,45 @@ mp1_ioctl_startgame: #FIX setting base_alive
 		ret
 
 mp1_ioctl_addmissile:
+		pushl %ebp
+		movl %esp, %ebp
+		pushl %ebx
+		pushl %esi
+		pushl %edi
+		movl 8(%ebp), %ebx #move user space pointer to missile into ebx
+		movl $33, %edi  #33 bytes per missile
+		pushl %edi #push parameter for malloc call
+		call mp1_malloc
+		popl %edi
+		cmpl $0, (%eax) #is the M[eax] NULL? CHECK THIS?
+		je malloc_failed
+		pushl %eax #save the pointer in memory to the allocated memory, we might need to free it
+		pushl %edi #parameter 3, number of bytes to copy
+		pushl %ebx #parameter 2, pointer to "from" in user space
+		pushl %eax #parameter 1, pointer to "to" in kernel space
+		call mp1_copy_from_user
+		addl $12, %esp #pop parameters from stack
+		cmpl $0, %eax #check if copy was successful 
+		jg copy_from_user_failed
+		popl %eax
+		xorl %eax, %eax #remove the pointer we allocated from stack and zero out eax for return val
+		jmp addmissile_return
+
+copy_from_user_failed:
+		popl %eax #pop the pointer to allocated memory back into eax
+		pushl %eax #re add the pointer to the stack as a parameter for free
+		call mp1_free
+		popl %eax
+malloc_failed:
+		movl $-1, %eax
+addmissile_return:
+		popl %edi
+		popl %esi
+		popl %ebx
+		leave
 		ret
+
+
 
 mp1_ioctl_movexhairs:
 		pushl %ebp
@@ -322,8 +394,39 @@ mp1_ioctl_movexhairs:
 		pushl %ebx
 		pushl %esi
 		pushl %edi
-
-
+		xorl %edx, %edx
+		xorl %esi, %esi
+		movl 8(%ebp), %ebx #move function parameter (x,y change) into ebx
+		movl %bx, %edx #move high 16 bits into edx, holds y change. DOES THIS WORK?? Does it sign extend??
+		shll $16, %ebx #shift the bottom 16 bits into the high 16 bits in ebx
+		movl %bx, %esi #shift the low 16 bits into esi, holds the x change
+		addl crosshairs_x, %esi #get new crosshair_x val and store in esi
+		cmpl $0, %esi 
+		jl x_below_0
+		cmpl $79, %esi
+		jg x_above_79
+		movl %esi, crosshairs_x(,1) # save the new VALID value into x 
+		jmp update_xhair_y
+x_below_0:
+		movl $0, crosshairs_x(,1) #reset crosshairs x to 0
+		jmp update_xhair_y
+x_above_79:
+		movl $79, crosshairs_x(,1) #reset crosshairs x to 79
+update_xhair_y:
+		addl crosshairs_y, %edx
+		cmpl $0, %edx
+		jl y_below_0
+		cmpl $24, %edx
+		jg y_above_24
+		movl %edx, crosshairs_y(,1) #save the new VALIUD value into y
+		jmp draw_new_xhairs
+y_below_0:
+		movl $0, crosshairs_y(,1) #reset crosshairs y to 0
+		jmp draw_new_xhairs
+y_above_24:
+		movl $24, crosshairs_y(,1) #reset crosshairs y to 24
+draw_new_xhairs:
+		call redraw_xhairs
 		popl %edi
 		popl %esi
 		popl %ebx
@@ -384,5 +487,29 @@ getstatus_return:
 		leave
 		ret
 
+
 mp1_ioctl_endgame:
+		pushl %ebp
+		movl %esp, %ebp
+		pushl %ebx
+		pushl %esi
+		pushl %edi
+
+free_missile_list:
+		movl mp1_missile_list, %ebx
+		cmpl $0, %ebx
+		je endgame_return
+		movl NEXT(%ebx), %edi
+		movl %edi, mp1_missile_list #Does this work? Store the new head as the NEXT missile
+		pushl %ebx
+		call mp1_free
+		popl %ebx
+		jmp free_missile_list
+
+endgame_return:
+		popl %edi
+		popl %esi
+		popl %ebx
+		xorl %eax, %eax #return 0
+		leave
 		ret
