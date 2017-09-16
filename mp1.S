@@ -146,12 +146,51 @@ update_missiles:
 		movl mp1_missile_list, %ebx
 
 traverse_list:
-		cmpl $0, (%ebx) #Access M[mp1_missile_list] and check if it's null
+		cmpl $0, (%ebx) #Access M[ebx] and check if it's null
 		je end_missiles
+		movl EXPLODED(%ebx), %esi 
+		cmpl $0, %esi  #Check if missile is exploding
+		jg missile_exploding
+		#update x and y
 
-
-
-
+		cmpl $0, X(%ebx)
+		jl remove_missile
+		cmpl $79, X(%ebx)
+		jg remove_missile
+		cmpl $0, Y(%ebx)
+		jl remove_missile
+		cmpl $24, Y(%ebx)
+		jg remove_missile
+		movl DEST_X(%ebx), %edi
+		cmpl X(%ebx), %edi #has the missile reached its destination?
+		jne not_reached
+		movl DEST_Y(%ebx), %edi
+		cmpl Y(%ebx), %edi
+		jne not_reached
+		jmp missile_exploding #it has reached its destination,so explode
+not_reached:
+		#update the screen
+		movl NEXT(%ebx), %ebx #move the next missile to be processed into ebx and continue
+		jmp traverse_list 
+missile_exploding:
+		#call missile_explode
+		#update other missiles and cities
+		#decrement explode value
+		#if 0, remove missile
+		#if not, jmp back to next missile processing
+remove_missile:
+		movl NEXT(%ebx), %ecx 	#move the pointer to the next missile to ecx
+		pushl %eax
+		pushl %ecx
+		pushl %edx
+		pushl %ebx			#push argument, pointer to missile to remove
+		call mp1_missile_remove
+		addl $4, %esp
+		popl %edx
+		popl %ecx
+		popl %eax
+		movl %ecx, %ebx     #put the next missile to be checked back into ebx
+		jmp traverse_list
 end_missiles:
 		popl %edi
 		popl %esi
