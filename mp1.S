@@ -138,20 +138,16 @@ traverse_list:
 		cmpl $0, %ebx #check if null
 		je end_missiles
 		#Clear missile 
-		pushl %eax
-		pushl %ecx
-		pushl %edx
+		pushl %eax #Caller save
 		pushl %ebx #push function parameter, pointer to missile
 		call calculate_missile_offset 
 		addl $4, %esp
 		movb $32, $cl #move (space) into cl 
 		call mp1_poke #offset in eax and char in cl
-		popl %edx
-		popl %ecx
 		popl %eax
 		movl EXPLODED(%ebx), %esi 
 		cmpl $0, %esi  #Check if missile is exploding
-		jg missile_exploding
+		jne missile_exploding
 		#update x and y
 		pushl %eax
 		pushl %ecx
@@ -163,19 +159,27 @@ traverse_list:
 		popl %ecx
 		popl %eax
 		#Check if the missile went off screen
-		cmpl $0, X(%ebx)
+		movl X(%ebx), %esi
+		shrl $16, %esi
+		cmpl $0, %esi
 		jl remove_missile
-		cmpl $79, X(%ebx)
+		cmpl $79, %esi
 		jg remove_missile
-		cmpl $0, Y(%ebx)
+		movl Y(%ebx), %esi
+		shrl $16, %esi
+		cmpl $0, %esi
 		jl remove_missile
-		cmpl $24, Y(%ebx)
+		cmpl $24, %esi
 		jg remove_missile
 		movl DEST_X(%ebx), %edi
-		cmpl X(%ebx), %edi #has the missile reached its destination?
+		movl X(%ebx), %esi
+		shrl $16, %esi
+		cmpl %esi, %edi #has the missile reached its destination?
 		jne not_reached
 		movl DEST_Y(%ebx), %edi
-		cmpl Y(%ebx), %edi
+		movl Y(%ebx), %esi
+		shrl $16, %esi
+		cmpl %esi, %edi
 		jne not_reached
 		movl $0, VX(%ebx)	#make this missile stop moving
 		movl $0, VY(%ebx)
@@ -201,7 +205,7 @@ missile_exploding:
 		jne chain_explosion	 #update other missiles and cities
 decrement_exploded:
 		decl EXPLODED(%ebx) #decrement explode value
-		cmpl $0, EXPLODED(%ebx) #if 0, remove missile if not, jmp back to next missile processing
+		cmpl $0, EXPLODED(%ebx) #if 0, remove missile if not, jmp to drawing an exploding missile
 		je remove_missile
 		#put exploding character into cl
 		movb $64, %cl  #PUTTING 64 '@' but figure out how to put explosion here
