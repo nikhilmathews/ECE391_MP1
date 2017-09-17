@@ -211,7 +211,14 @@ decrement_exploded:
 		movb $64, %cl  #PUTTING 64 '@' but figure out how to put explosion here
 		jmp redraw_missiles
 chain_explosion:
-		#Update the cities and other missiles here
+		#Update the cities and other missiles here, notify user
+		pushl %eax
+		pushl %ecx
+		pushl %edx
+		call mp1_notify_user
+		popl %edx
+		popl %ecx
+		popl %eax
 		jmp decrement_exploded
 remove_missile:
 		movl NEXT(%ebx), %ecx 	#move the pointer to the next missile to ecx
