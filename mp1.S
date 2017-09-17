@@ -142,7 +142,7 @@ traverse_list:
 		pushl %ebx #push function parameter, pointer to missile
 		call calculate_missile_offset 
 		addl $4, %esp
-		movb $32, $cl #move (space) into cl 
+		movb $32, %cl #move (space) into cl 
 		call mp1_poke #offset in eax and char in cl
 		popl %eax
 		movl EXPLODED(%ebx), %esi 
@@ -215,11 +215,13 @@ chain_explosion:
 		jmp decrement_exploded
 remove_missile:
 		movl NEXT(%ebx), %ecx 	#move the pointer to the next missile to ecx
+		pushl %eax 
 		pushl %ecx
 		pushl %ebx			#push argument, pointer to missile to remove
 		call mp1_missile_remove
 		addl $4, %esp
 		popl %ecx
+		popl %eax
 		movl %ecx, %ebx     #put the next missile to be checked back into ebx
 		jmp traverse_list
 redraw_missiles:
@@ -351,7 +353,7 @@ city_draw_return:
 		ret
 
 
-#clobbers eax and ecx 
+#clobbers ecx
 redraw_xhairs:
 		pushl %ebp
 		movl %esp, %ebp
@@ -359,10 +361,10 @@ redraw_xhairs:
 		pushl %esi
 		pushl %edi
 		pushl %edx #mp1_poke clobbers edx
-		movl row_offset, %ebx
-		imull crosshairs_y, %ebx, %edi #row offset in edi
-		movl column_offset, %ebx
-		imull crosshairs_x, %ebx, %esi #column offset in esi
+		movl crosshairs_y, %ebx
+		imull $160, %ebx, %edi #row offset in edi
+		movl crosshairs_x, %ebx
+		imull $2, %ebx, %esi #column offset in esi
 		addl %edi, %esi 
 		movl %esi, %eax #move video offset into eax for mp1_poke 
 		movb XHAIR, %cl #move crosshair character into cl
@@ -375,7 +377,7 @@ redraw_xhairs:
 		leave
 		ret
 
-#clobbers ecx (cl)
+#clobbers ecx (cl) and eax
 mp1_missile_remove:
 		pushl %ebp
 		movl %esp, %ebp
@@ -393,7 +395,8 @@ find_missile:
 		je found_missile
 		jmp find_missile
 found_missile:
-		movl NEXT(%edi), NEXT(%ebx) #point the prev->next to curr->next
+		movl NEXT(%edi), %eax
+		movl %eax, NEXT(%ebx) #point the prev->next to curr->next
 		jmp remove_from_screen
 remove_head_list:
 		movl NEXT(%edi), %ebx
@@ -461,7 +464,8 @@ mp1_ioctl_addmissile:
 		jne copy_from_user_failed
 		popl %eax #pop the pointer we allocated in stack back into eax
 		#Fix the new pointer as the head of the list
-		movl mp1_missile_list, NEXT(%eax)
+		movl mp1_missile_list, %esi
+		movl %esi, NEXT(%eax)
 		movl %eax, mp1_missile_list
 		xorl %eax, %eax # zero out eax for return val
 		jmp addmissile_return
@@ -493,10 +497,10 @@ mp1_ioctl_movexhairs:
 		#First clear the current crosshair
 		movb $32, %cl #move (space) ASCII into cl for printing to screen
 		pushl %edx #mp1_poke clobbers edx
-		movl row_offset, %ebx
-		imull crosshairs_y, %ebx, %edi #row offset in edi
-		movl column_offset, %ebx
-		imull crosshairs_x, %ebx, %esi #column offset in esi
+		movl crosshairs_y, %edx
+		imull $160, %edx, %edi #row offset in edi
+		movl crosshairs_x, %edx
+		imull $2, %edx, %esi #column offset in esi
 		addl %edi, %esi 
 		movl %esi, %eax #move video offset into eax for mp1_poke 
 		#Do we need caller convention here?
@@ -504,9 +508,12 @@ mp1_ioctl_movexhairs:
 		popl %edx
 		#Now update the new crosshair position
 		movl 8(%ebp), %ebx #move function parameter (x,y change) into ebx
-		movw %bx, %esi #move low 16 bits into esi, holds x change.
-		shrl $16, %ebx #shift the high 16 bits into the low 16 bits in ebx
-		movw %bx, %edx #shift the low 16 bits into edx, holds the y change
+		movl %ebx, %eax
+		shll $16, %eax
+		sarl $16, %eax
+		movl %eax, %esi #move low 16 bits into esi, holds x change.
+		sarl $16, %ebx #shift the high 16 bits into the low 16 bits in ebx
+		movl %ebx, %edx #shift the low 16 bits into edx, holds the y change
 		addl crosshairs_x, %esi #get new crosshair_x val and store in esi
 		cmpl $0, %esi 
 		jl x_below_0
@@ -652,8 +659,8 @@ calculate_missile_offset:
 		shrl $16, %esi #shift the high 16 bits to the bottom 16 bits DO WE WANT SHRL or SARL
 		movl Y(%ebx), %edi 
 		shrl $16, %edi 
-		imull row_offset, %edi, %edi
-		imull column_offset, %esi, %esi #can we overwrite, does this work?
+		imull $160, %edi, %edi
+		imull $2, %esi, %esi #can we overwrite, does this work?
 		addl %edi, %esi
 		movl %esi, %eax
 		popl %edi
