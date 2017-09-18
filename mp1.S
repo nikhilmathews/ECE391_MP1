@@ -374,7 +374,7 @@ redraw_xhairs:
 		imull $2, %ebx, %esi #column offset in esi
 		addl %edi, %esi 
 		movl %esi, %eax #move video offset into eax for mp1_poke 
-		movb XHAIR, %cl #move crosshair character into cl
+		movb $88, %cl #move crosshair character into cl
 		#Do we need caller convention here?
 		call mp1_poke
 		popl %edx
