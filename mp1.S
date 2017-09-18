@@ -38,10 +38,7 @@ base_pic:     	    .string "/^^^\\"	# Picture of a live base
 dead_base_pic: 	    .string "xxxxx"	# Picture of a dead base
 crosshairs_x:		.long 0x0	# X-position of the crosshairs
 crosshairs_y:		.long 0x0	# Y-position of the crosshairs
-XHAIR: 				.long 88	#Character for crosshair - 'X'
-row_offset:         .long 160   #Row multiple for writing to screen (80 bytes per row * 2 bytes per character)
-column_offset:      .long 2     #Column multiple for writing to screen (2 bytes per character) MIGHT NEED TO FLIP THESE TWO
-mp1_status:			.long 0x0   #Status variable with information of the score and base alive/dead
+mp1_status:			.long 0x0   #Status variable with information of the score in lower 16 bits and base alive/dead in bits 16,17,18
 
 .text
 
@@ -117,7 +114,6 @@ invalid_ioctl:
 ioctl_return:
 		ret
 
-#Is this supposed to be here?
 jump_table:
 .long mp1_ioctl_startgame, mp1_ioctl_addmissile, mp1_ioctl_movexhairs, mp1_ioctl_getstatus, mp1_ioctl_endgame
 
@@ -125,7 +121,17 @@ jump_table:
 
 # ----------------- Functions private to this file -------------------
 
-#using both ecx and cl (FIX THAT)
+# update_missiles
+# Performs two tasks:
+#	(1) traverses the missile list and updates it as follows:
+#         If exploding, don't move and check if anything else is exploding and notify user
+#		  If not exploding, check if moved of screen, and delete if so
+#		  If on screen and not exploding, keep moving
+#	(2) Keep redrawing the missiles, as long as within the bounds of the screen
+# Inputs   : none
+# Outputs  : none
+# Registers: Clobbers ecx
+
 update_missiles:
 		pushl %ebp
 		movl %esp, %ebp
@@ -135,7 +141,7 @@ update_missiles:
 		#Traverse the missile linked list
 		movl mp1_missile_list, %ebx
 traverse_list:
-		cmpl $0, %ebx #check if null
+		cmpl $0, %ebx #check if missile is null
 		je end_missiles
 		#Clear missile 
 		pushl %eax #Caller save
@@ -143,12 +149,12 @@ traverse_list:
 		call calculate_missile_offset 
 		addl $4, %esp
 		movb $32, %cl #move (space) into cl 
-		call mp1_poke #offset in eax and char in cl
+		call mp1_poke #offset in eax from calculate_missile_offset returnval and char in cl
 		popl %eax
 		movl EXPLODED(%ebx), %esi 
 		cmpl $0, %esi  #Check if missile is exploding
 		jne missile_exploding
-		#update x and y
+		#not exploding, update x and y
 		pushl %eax
 		pushl %ecx
 		pushl %edx
@@ -171,17 +177,18 @@ traverse_list:
 		jl remove_missile
 		cmpl $24, %esi
 		jg remove_missile
+		#check if missile reached destination
 		movl DEST_X(%ebx), %edi
 		movl X(%ebx), %esi
 		shrl $16, %esi
-		cmpl %esi, %edi #has the missile reached its destination?
+		cmpl %esi, %edi  
 		jne not_reached
 		movl DEST_Y(%ebx), %edi
 		movl Y(%ebx), %esi
 		shrl $16, %esi
 		cmpl %esi, %edi
 		jne not_reached
-		movl $0, VX(%ebx)	#make this missile stop moving
+		movl $0, VX(%ebx)	#make this missile stop moving because it has reached destination
 		movl $0, VY(%ebx)
 		jmp missile_exploding #it has reached its destination,so explode
 not_reached:
@@ -201,17 +208,16 @@ missile_exploding:
 		popl %edx
 		popl %ecx
 		popl %eax
-		cmpl $0, %edi
-		jne chain_explosion	 #update other missiles and cities
+		cmpl $0, %edi #check if explosion is causing other missiles or bases to explode
+		jne chain_explosion	 
 decrement_exploded:
 		decl EXPLODED(%ebx) #decrement explode value
 		cmpl $0, EXPLODED(%ebx) #if 0, remove missile if not, jmp to drawing an exploding missile
 		je remove_missile
-		#put exploding character into cl
-		movb $64, %cl  #PUTTING 64 '@' but figure out how to put explosion here
+		movb $EXPLOSION, %cl  #Put EXPLOSION character into cl
 		jmp redraw_missiles
 chain_explosion:
-		#Update the cities and other missiles here, notify user
+		#Notify the user that there's a chain explosion and then move on to decrementing EXPLODED value
 		pushl %eax
 		pushl %ecx
 		pushl %edx
@@ -230,7 +236,7 @@ remove_missile:
 		popl %ecx
 		popl %eax
 		movl %ecx, %ebx     #put the next missile to be checked back into ebx
-		jmp traverse_list
+		jmp traverse_list	#Continue moving through list
 redraw_missiles:
 		#put the offset in memory into eax, char already in cl
 		pushl %eax #Save eax because calculate_mission_position stores return val in eax
@@ -241,7 +247,7 @@ redraw_missiles:
 		call mp1_poke
 		popl %edx
 		popl %eax #recover eax
-		movl NEXT(%ebx), %ebx #curr= curr->next
+		movl NEXT(%ebx), %ebx #Move to the next missile and keep traversing list 
 		jmp traverse_list
 end_missiles:
 		popl %edi
@@ -250,29 +256,32 @@ end_missiles:
 		leave
 		ret
 
-#clobbers ecx (cl)
-redraw_cities: #make sure rows and columns offsets are right
+# redraw_cities
+#Redraws all three cities based on whether they are dead or alive and makes sure they are always visible
+# Inputs   : none
+# Outputs  : none
+# Registers: Standard C calling convention
+redraw_cities: 
 		pushl %ebp
 		movl %esp, %ebp
 		pushl %ebx
 		pushl %esi
 		pushl %edi
 		movl $3840, %ebx #bottom most row has offset 3840 bytes
-		movl $36, %esi #first character in column 18 (18*2 bytes offset)
+		movl $36, %esi  #first character in column 18 (18*2 bytes offset)
 		xorl %edx, %edx
 		movl base_alive, %edi
 		andl $0x00000001, %edi #bitmask for first city byte
 		cmpl $0, %edi
-		je first_base_dead
-		#draw city 1 alive and then city 1 dead
+		je first_base_dead #draw city 1 dead if 0
 first_base_alive:		
 		movl %ebx, %eax
 		addl %esi, %eax  
-		movb base_pic(,%edx,1), %cl #move character into cl (MIGHT NEED TO SOMEHOW CHANGE THIS)
+		movb base_pic(,%edx,1), %cl #move character draw into cl (edx shifts the character to draw by one each loop)
 		pushl %edx
 		call mp1_poke
 		popl %edx
-		addl $2, %esi #move to next offset location for column, bottom row so doesn't change
+		addl $2, %esi #move to next offset location (2 bytes) for column, no change in x because still bottom row
 		incl %edx
 		cmpl $5, %edx
 		jl first_base_alive #if count<5, keep drawing, else go on to second base
@@ -280,11 +289,11 @@ first_base_alive:
 first_base_dead:
 		movl %ebx, %eax
 		addl %esi, %eax  
-		movb dead_base_pic(,%edx,1), %cl #move character into cl (MIGHT NEED TO SOMEHOW CHANGE THIS)
+		movb dead_base_pic(,%edx,1), %cl #move character into cl
 		pushl %edx
 		call mp1_poke
 		popl %edx
-		addl $2, %esi #move to next offset location for column, bottom row so doesn't change
+		addl $2, %esi 
 		incl %edx
 		cmpl $5, %edx
 		jl first_base_dead #if count<5, keep drawing, else go on to second base
@@ -295,8 +304,7 @@ second_base:
 		movl base_alive, %edi
 		andl $0x00000100, %edi #bitmask for second city byte
 		cmpl $0, %edi
-		je second_base_dead
-		#draw city 2 alive and then city 2 dead
+		je second_base_dead #draw city 2 dead if 0
 second_base_alive:
 		movl %ebx, %eax
 		addl %esi, %eax
@@ -307,16 +315,16 @@ second_base_alive:
 		addl $2, %esi
 		incl %edx
 		cmpl $5, %edx
-		jl second_base_alive
-		jmp third_base
+		jl second_base_alive #if count<5, keep drawing, else go on to third base
+		jmp third_base 
 second_base_dead:
 		movl %ebx, %eax
 		addl %esi, %eax  
-		movb dead_base_pic(,%edx,1), %cl #move character into cl (MIGHT NEED TO SOMEHOW CHANGE THIS)
+		movb dead_base_pic(,%edx,1), %cl 
 		pushl %edx
 		call mp1_poke
 		popl %edx
-		addl $2, %esi #move to next offset location for column, bottom row so doesn't change
+		addl $2, %esi 
 		incl %edx
 		cmpl $5, %edx
 		jl second_base_dead #if count<5, keep drawing, else go on to third base
@@ -327,8 +335,7 @@ third_base:
 		movl base_alive, %edi
 		andl $0x00010000, %edi #bitmask for third city byte
 		cmpl $0, %edi
-		je third_base_dead
-		#draw city 3 alive and then city 3 dead
+		je third_base_dead #draw city 3 dead if 0
 third_base_alive:
 		movl %ebx, %eax
 		addl %esi, %eax
@@ -348,7 +355,7 @@ third_base_dead:
 		pushl %edx
 		call mp1_poke
 		popl %edx
-		addl $2, %esi #move to next offset location for column, bottom row so doesn't change
+		addl $2, %esi
 		incl %edx
 		cmpl $5, %edx
 		jl third_base_dead #if count<5, keep drawing,else wrap up and return
@@ -360,14 +367,18 @@ city_draw_return:
 		ret
 
 
-#clobbers ecx
+# redraw_xhairs
+# Redraws the crosshairs so they are always visible
+# Inputs   : none
+# Outputs  : none
+# Registers: Clobbers ecx
 redraw_xhairs:
 		pushl %ebp
 		movl %esp, %ebp
 		pushl %ebx
 		pushl %esi
 		pushl %edi
-		pushl %edx #mp1_poke clobbers edx
+		pushl %edx #mp1_poke clobbers edx so save it
 		movl crosshairs_y, %ebx
 		imull $160, %ebx, %edi #row offset in edi
 		movl crosshairs_x, %ebx
@@ -375,16 +386,23 @@ redraw_xhairs:
 		addl %edi, %esi 
 		movl %esi, %eax #move video offset into eax for mp1_poke 
 		movb $88, %cl #move crosshair character into cl
-		#Do we need caller convention here?
 		call mp1_poke
-		popl %edx
+		popl %edx 	#pop back the value of edx saved earlier
 		popl %edi
 		popl %esi
 		popl %ebx
 		leave
 		ret
 
-#clobbers ecx (cl) and eax
+# mp1_missile_remove
+# Performs two tasks:
+#	(1) Remove the input missile from the linked list
+#	(2) If required update the head of the linked list
+#   (3) Remove the missile from the screen
+# 	(4) Free the memory associated with the missile struct
+# Inputs   : missile pointer
+# Outputs  : none
+# Registers: Clobbers ecx and eax
 mp1_missile_remove:
 		pushl %ebp
 		movl %esp, %ebp
@@ -394,31 +412,30 @@ mp1_missile_remove:
 		movl 8(%ebp), %esi #Move the pointer to the missile to be removed into esi
 		movl mp1_missile_list, %edi #Move the head missile into edi
 		cmpl %edi, %esi 
-		je remove_head_list
+		je remove_head_list #if head, remove it and update the head
 find_missile:
-		movl %edi, %ebx #store prev in ebx
+		movl %edi, %ebx #store prev missile in ebx
 		movl NEXT(%edi), %edi #move to next missile
 		cmpl %edi, %esi  #is this the missile to be removed?
 		je found_missile
-		jmp find_missile
+		jmp find_missile  #if not, keep traversing list
 found_missile:
 		movl NEXT(%edi), %eax
-		movl %eax, NEXT(%ebx) #point the prev->next to curr->next
+		movl %eax, NEXT(%ebx) #point the prev->next to current->next, thereby removing the missile from the list
 		jmp remove_from_screen
 remove_head_list:
 		movl NEXT(%edi), %ebx
-		movl %ebx, mp1_missile_list #Does this work? Store the new head as the NEXT missile
+		movl %ebx, mp1_missile_list #Store the new head as the NEXT missile
 remove_from_screen:
-		#erase the missile by putting " " char at it's location
+		#erase the missile by putting (space) char at it's location
 		pushl %edi #push the parameter, the missile pointer
 		call calculate_missile_offset
 		addl $4, %esp
-		movb $32, %cl #move (space) into cl
+		movb $32, %cl #move (space) into cl, eax already holds the video offset 
 		pushl %edx #mp1_poke clobbers edx
 		call mp1_poke
 		popl %edx
-free_missile: #Calling convention needed?
-		#SHOULD THIS BE ESI?
+free_missile: 
 		pushl %edi #push function parameter, a pointer to the memory to be freed
 		call mp1_free
 		popl %edi
@@ -429,6 +446,11 @@ missile_remove_return:
 		leave 
 		ret
 
+# mp1_ioctl_startgame
+# Initializes the crosshairs to (40,12) and sets all bases alive
+# Inputs   : none
+# Outputs  : none
+# Registers: Standard C caller convention
 mp1_ioctl_startgame: 
 		pushl %ebp
 		movl %esp, %ebp
@@ -436,18 +458,21 @@ mp1_ioctl_startgame:
 		pushl %esi
 		pushl %edi
 		#Set all the bases as alive
-		movl $0x00010101, base_alive(,1) 
+		movl $0x00010101, base_alive(,1) #set all three bases alive
 		#Set the crosshairs to (40,12)
 		movl $40, crosshairs_x(,1)
 		movl $12, crosshairs_y(,1)
-		#Do we have to draw crosshairs? Should tasklet/redraw_xhairs figure that out?
 		popl %edi
 		popl %esi
 		popl %ebx
 		leave
 		ret
 
-#Clobbers eax
+# mp1_ioctl_addmissile
+# Adds a missile to kernel space buffer. 
+# Inputs   : A pointer to the missile in user space
+# Outputs  : returns -1 for failure and 0 for success
+# Registers: Clobbers ecx
 mp1_ioctl_addmissile:
 		pushl %ebp
 		movl %esp, %ebp
@@ -456,10 +481,10 @@ mp1_ioctl_addmissile:
 		pushl %edi
 		movl 8(%ebp), %ebx #move user space pointer to missile into ebx
 		movl $33, %edi  #each missile is 33 bytes
-		pushl %edi #push parameter for malloc call
+		pushl %edi #push parameter (33 bytes)for malloc call
 		call mp1_malloc
 		popl %edi
-		cmpl $0, %eax #should this be M[eax] NULL? CHECK THIS?
+		cmpl $0, %eax # Check if malloc failed (returns null pointer)
 		je malloc_failed
 		pushl %eax #save the pointer in memory to the allocated memory, we might need to free it
 		pushl %edi #parameter 3, number of bytes to copy
@@ -483,7 +508,7 @@ copy_from_user_failed:
 		call mp1_free
 		popl %eax
 malloc_failed:
-		movl $-1, %eax
+		movl $-1, %eax #return -1 to indicate failure
 addmissile_return:
 		popl %edi
 		popl %esi
@@ -492,7 +517,15 @@ addmissile_return:
 		ret
 
 
-#Clobbers edx and eax
+# mp1_ioctl_movexhairs
+# Moves the crosshairs by:
+# 			(1) Updating the X and Y location of the crosshair
+#			(2) Removing the old crosshair from the screen
+#			(3) Making sure they are within the bounds of the screen
+#			(3) redrawing the crosshair
+# Inputs   : a 32 bit unsigned integer; high 16 bits is a signed y change and low 16 bits is a signed x change
+# Outputs  : returns 0 for success
+# Registers: Clobbers edx, eax and ecx
 mp1_ioctl_movexhairs:
 		pushl %ebp
 		movl %esp, %ebp
@@ -510,17 +543,16 @@ mp1_ioctl_movexhairs:
 		imull $2, %edx, %esi #column offset in esi
 		addl %edi, %esi 
 		movl %esi, %eax #move video offset into eax for mp1_poke 
-		#Do we need caller convention here?
 		call mp1_poke
-		popl %edx
+		popl %edx 
 		#Now update the new crosshair position
 		movl 8(%ebp), %ebx #move function parameter (x,y change) into ebx
 		movl %ebx, %eax
-		shll $16, %eax
+		shll $16, %eax #remove the high 16 bits and then move the low bits back 
 		sarl $16, %eax
-		movl %eax, %esi #move low 16 bits into esi, holds x change.
-		sarl $16, %ebx #shift the high 16 bits into the low 16 bits in ebx
-		movl %ebx, %edx #shift the low 16 bits into edx, holds the y change
+		movl %eax, %esi #holds the x change
+		sarl $16, %ebx #remove the low 16 bits
+		movl %ebx, %edx #shift into edx, holds the y change
 		addl crosshairs_x, %esi #get new crosshair_x val and store in esi
 		cmpl $0, %esi 
 		jl x_below_0
@@ -547,7 +579,7 @@ y_below_0:
 y_above_24:
 		movl $24, crosshairs_y(,1) #reset crosshairs y to 24
 draw_new_xhairs:
-		call redraw_xhairs
+		call redraw_xhairs 
 		popl %edi
 		popl %esi
 		popl %ebx
@@ -555,8 +587,12 @@ draw_new_xhairs:
 		leave
 		ret
 
-#Clobbers edx and eax
-#Do we need to malloc memory for pointer in user space?
+# mp1_ioctl_getstatus
+# Updates the user status by copying a long from kernel space to user space
+# Puts the score in lower 16 bits, and then base status into bits 16,17,18 (1 for alive and 0 for dead)
+# Inputs   : a pointer to a 32 bit integer in user space
+# Outputs  : returns 0 for success and -1 for failure
+# Registers: Clobbers edx, eax
 mp1_ioctl_getstatus:
 		pushl %ebp
 		movl %esp, %ebp
@@ -566,7 +602,7 @@ mp1_ioctl_getstatus:
 		movl 8(%ebp), %ebx #Move user-level integer pointer to ebx
 		#Copy digits into a number
 		xorl %edx, %edx
-		movw mp1_score, %dx #Move score into lower 16 bits (DOES THIS WORK?)
+		movw mp1_score, %dx #Move score into lower 16 bits
 		movl base_alive, %edi
 		movl $0x00000001, %esi
 		andl %edi, %esi
@@ -591,16 +627,16 @@ copy_to_user:
 		#Caller convention?
 		movl %edx, mp1_status(,1) #store calculated long in a location
 		pushl $4   #push last argument (n), 4 bytes must be copied
-		pushl $mp1_status #pass pointer to "from" variable IS THIS RIGHT?
+		pushl $mp1_status #pass pointer to "from" variable (label address)
 		push  %ebx  #pass pointer to "to" variable
 		call mp1_copy_to_user
 		addl $12, %esp
-		cmpl $0, %eax #if eax!= 0, the copy failed so we should return -1
+		cmpl $0, %eax #if eax!= 0, the copy failed
 		jne copy_failed
-		xorl %eax, %eax
+		xorl %eax, %eax #otherwise return 0 for success
 		jmp getstatus_return
 copy_failed:
-		movl $-1, %eax
+		movl $-1, %eax #so we should return -1 for failure
 getstatus_return:		
 		popl %edi
 		popl %esi
@@ -609,6 +645,11 @@ getstatus_return:
 		ret
 
 
+# mp1_ioctl_endgame
+# Clear the missile list and deallocate the memory of each missile
+# Inputs   : none
+# Outputs  : 0 for success
+# Registers: Standard C caller convention
 mp1_ioctl_endgame:
 		pushl %ebp
 		movl %esp, %ebp
@@ -617,23 +658,27 @@ mp1_ioctl_endgame:
 		pushl %edi
 free_missile_list:
 		movl mp1_missile_list, %ebx
-		cmpl $0, %ebx #compare pointer
+		cmpl $0, %ebx # check if list is cleared
 		je endgame_return
 		movl NEXT(%ebx), %edi
-		movl %edi, mp1_missile_list #Does this work? Store the new head as the NEXT missile
+		movl %edi, mp1_missile_list #Store the next missile to be checked as the new head of list
 		pushl %ebx
-		call mp1_free
+		call mp1_free #free the memory of the current missile
 		popl %ebx
 		jmp free_missile_list
 endgame_return:
 		popl %edi
 		popl %esi
 		popl %ebx
-		xorl %eax, %eax #return 0
+		xorl %eax, %eax #return 0 for success
 		leave
 		ret
 
-
+# update_missile_position
+# Updates the missile position (x,y) based on VX and VY values 
+# Inputs   : a pointer to the missile to be updated
+# Outputs  : none
+# Registers: Standard C caller convention
 update_missile_position:
 		pushl %ebp
 		movl %esp, %ebp
@@ -641,7 +686,7 @@ update_missile_position:
 		pushl %esi
 		pushl %edi
 		movl 8(%ebp), %ebx #move the missile pointer into ebx
-		#Update both the x and y coordinate, VX/VY shouldn't change afaik
+		#Update both the x and y coordinate, VX/VY shouldn't change
 		movl X(%ebx), %esi
 		addl VX(%ebx), %esi
 		movl %esi, X(%ebx)
@@ -654,7 +699,11 @@ update_missile_position:
 		leave
 		ret
 
-#clobbers eax
+# calculate_missile_offset
+# Calculate video memory offset for a given missile
+# Inputs   : a pointer to the missile to calculate offset for
+# Outputs  : video memory offset in eax
+# Registers: clobber eax
 calculate_missile_offset:
 		pushl %ebp
 		movl %esp, %ebp
