@@ -102,7 +102,7 @@ mp1_rtc_tasklet:
 mp1_ioctl:
 		#move cmd argument into register
 		movl 8(%esp), %ebx #cmd
-		cmpl $0, %ebx
+		cmpl $0, %ebx #make sure cmd is not invalid (must be between 0 and 4)
 		jl invalid_ioctl
 		cmpl $4, %ebx
 		jg invalid_ioctl
@@ -167,15 +167,15 @@ traverse_list:
 		#Check if the missile went off screen
 		movl X(%ebx), %esi
 		shrl $16, %esi
-		cmpl $0, %esi
+		cmpl $0, %esi #left side of screen
 		jl remove_missile
-		cmpl $79, %esi
+		cmpl $79, %esi #right side of screen
 		jg remove_missile
 		movl Y(%ebx), %esi
 		shrl $16, %esi
-		cmpl $0, %esi
+		cmpl $0, %esi #top of screen
 		jl remove_missile
-		cmpl $24, %esi
+		cmpl $24, %esi #bottom of screen 
 		jg remove_missile
 		#check if missile reached destination
 		movl DEST_X(%ebx), %edi
@@ -283,7 +283,7 @@ first_base_alive:
 		popl %edx
 		addl $2, %esi #move to next offset location (2 bytes) for column, no change in x because still bottom row
 		incl %edx
-		cmpl $5, %edx
+		cmpl $5, %edx #bases have 5 characters
 		jl first_base_alive #if count<5, keep drawing, else go on to second base
 		jmp second_base
 first_base_dead:
@@ -295,10 +295,10 @@ first_base_dead:
 		popl %edx
 		addl $2, %esi 
 		incl %edx
-		cmpl $5, %edx
+		cmpl $5, %edx #bases have 5 characters
 		jl first_base_dead #if count<5, keep drawing, else go on to second base
 second_base:
-		movl $3840, %ebx
+		movl $3840, %ebx #bottom most row has offset 3840 bytes
 		movl $76, %esi #first character in column 38 (38*2 bytes offset)
 		xorl %edx, %edx
 		movl base_alive, %edi
@@ -314,7 +314,7 @@ second_base_alive:
 		popl %edx
 		addl $2, %esi
 		incl %edx
-		cmpl $5, %edx
+		cmpl $5, %edx #bases have 5 characters
 		jl second_base_alive #if count<5, keep drawing, else go on to third base
 		jmp third_base 
 second_base_dead:
@@ -329,7 +329,7 @@ second_base_dead:
 		cmpl $5, %edx
 		jl second_base_dead #if count<5, keep drawing, else go on to third base
 third_base:
-		movl $3840, %ebx
+		movl $3840, %ebx #bottom most row has offset 3840 bytes
 		movl $116, %esi #first character in column 58 (58*2 bytes offset)
 		xorl %edx, %edx
 		movl base_alive, %edi
@@ -380,9 +380,9 @@ redraw_xhairs:
 		pushl %edi
 		pushl %edx #mp1_poke clobbers edx so save it
 		movl crosshairs_y, %ebx
-		imull $160, %ebx, %edi #row offset in edi
+		imull $160, %ebx, %edi #row offset in edi (80 * 2 * y) (video_mem y offset is 2 bytes per character and 80 characters per row)
 		movl crosshairs_x, %ebx
-		imull $2, %ebx, %esi #column offset in esi
+		imull $2, %ebx, %esi #column offset in esi (2* x) (video_mem x offset is 2 bytes per character)
 		addl %edi, %esi 
 		movl %esi, %eax #move video offset into eax for mp1_poke 
 		movb $88, %cl #move crosshair character into cl
@@ -538,9 +538,9 @@ mp1_ioctl_movexhairs:
 		movb $32, %cl #move (space) ASCII into cl for printing to screen
 		pushl %edx #mp1_poke clobbers edx
 		movl crosshairs_y, %edx
-		imull $160, %edx, %edi #row offset in edi
+		imull $160, %edx, %edi #row offset in edi (80 * 2 * y) (video_mem y offset is 2 bytes per character and 80 characters per row)
 		movl crosshairs_x, %edx
-		imull $2, %edx, %esi #column offset in esi
+		imull $2, %edx, %esi # column offset in esi (2 * x)(video_mem x offset is 2 bytes per character)
 		addl %edi, %esi 
 		movl %esi, %eax #move video offset into eax for mp1_poke 
 		call mp1_poke
@@ -554,9 +554,9 @@ mp1_ioctl_movexhairs:
 		sarl $16, %ebx #remove the low 16 bits
 		movl %ebx, %edx #shift into edx, holds the y change
 		addl crosshairs_x, %esi #get new crosshair_x val and store in esi
-		cmpl $0, %esi 
+		cmpl $0, %esi #left side of screen
 		jl x_below_0
-		cmpl $79, %esi
+		cmpl $79, %esi #right side of screen
 		jg x_above_79
 		movl %esi, crosshairs_x(,1) # save the new VALID value into x 
 		jmp update_xhair_y
@@ -567,11 +567,11 @@ x_above_79:
 		movl $79, crosshairs_x(,1) #reset crosshairs x to 79
 update_xhair_y:
 		addl crosshairs_y, %edx
-		cmpl $0, %edx
+		cmpl $0, %edx #top of screen
 		jl y_below_0
-		cmpl $24, %edx
+		cmpl $24, %edx #bottom of screen
 		jg y_above_24
-		movl %edx, crosshairs_y(,1) #save the new VALIUD value into y
+		movl %edx, crosshairs_y(,1) #save the new VALID value into y
 		jmp draw_new_xhairs
 y_below_0:
 		movl $0, crosshairs_y(,1) #reset crosshairs y to 0
@@ -604,21 +604,21 @@ mp1_ioctl_getstatus:
 		xorl %edx, %edx
 		movw mp1_score, %dx #Move score into lower 16 bits
 		movl base_alive, %edi
-		movl $0x00000001, %esi
+		movl $0x00000001, %esi #bitmask for base 1
 		andl %edi, %esi
 		cmpl $0, %esi
 		je base_2_status #skip bit 16, which is already cleared because base1 is dead
 		orl $0x00010000, %edx #set bit 16 to 1 and keep the rest unchanged
 base_2_status:
 		movl base_alive, %edi
-		movl $0x00000100, %esi
+		movl $0x00000100, %esi #bitmask for base 2
 		andl %edi, %esi
 		cmpl $0, %esi
 		je base_3_status #skip bit 17, which is already cleared because base2 is dead
 		orl $0x00020000, %edx #set bit 17 to 1 and keep the rest unchanged
 base_3_status:
 		movl base_alive, %edi
-		movl $0x00010000, %esi
+		movl $0x00010000, %esi #bitmask for base 3
 		andl %edi, %esi
 		cmpl $0, %esi
 		je copy_to_user #skip bit 18, which is already cleared because base3 is dead
@@ -712,11 +712,11 @@ calculate_missile_offset:
 		pushl %edi
 		movl 8(%ebp), %ebx #move the missile pointer into ebx
 		movl X(%ebx), %esi
-		shrl $16, %esi #shift the high 16 bits to the bottom 16 bits DO WE WANT SHRL or SARL
+		shrl $16, %esi #shift the high 16 bits to the bottom 16 bits
 		movl Y(%ebx), %edi 
 		shrl $16, %edi 
-		imull $160, %edi, %edi
-		imull $2, %esi, %esi #can we overwrite, does this work?
+		imull $160, %edi, %edi #row offset in edi (80 * 2 * y) (video_mem y offset is 2 bytes per character and 80 characters per row)
+		imull $2, %esi, %esi # column offset in esi (2*x) (video_mem x offset is 2 bytes per character)
 		addl %edi, %esi
 		movl %esi, %eax
 		popl %edi
